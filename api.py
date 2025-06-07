@@ -1,98 +1,115 @@
-# api.py
-
-from dotenv import load_dotenv
 import os
-import asyncio
-from fastapi import FastAPI
-from contextlib import asynccontextmanager
-import uvicorn
+import threading
 import logging
 from datetime import datetime
+from dotenv import load_dotenv
+
+# ─── LOAD .env CHO DEV LOCAL ─────────────────────────────────────────────────────
+load_dotenv()
+
+# ─── CẤU HÌNH ─────────────────────────────────────────────────────────────────────
+DISCORD_TOKEN        = os.getenv("DISCORD_TOKEN")                # set trên Vercel
+COMMAND_HISTORY_SIZE = int(os.getenv("COMMAND_HISTORY_SIZE", "20"))
+PREFIX               = "!"                                       # prefix cho các lệnh bất kỳ
+
+# ─── LOGGER ─────────────────────────────────────────────────────────────────────
+logger = logging.getLogger("bot-logger")
+handler = logging.StreamHandler()
+handler.setFormatter(
+    logging.Formatter("%(asctime)s - %(user)s - %(command)s", "%Y-%m-%d %H:%M:%S")
+)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+# ─── DISCORD BOT ─────────────────────────────────────────────────────────────────
 import discord
 from discord.ext import commands
 
-# --- Load environment variables ---
-load_dotenv()
-TOKEN = os.getenv("DISCORD_TOKEN")
-APP_ID = int(os.getenv("DISCORD_APP_ID", "0"))
-
-# --- Configure logger to stdout (Vercel will collect these logs) ---
-logger = logging.getLogger("discord")
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(levelname)s - %(message)s',  # chỉ giữ message
-    datefmt='%Y-%m-%d %H:%M:%S'
-))
-logger.addHandler(handler)
-
-# --- In-memory log buffer (keep last 10 entries) ---
-logs = []
-
-# --- Discord bot setup ---
 intents = discord.Intents.default()
 intents.message_content = True
+bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
-bot = commands.Bot(
-    command_prefix="!",
-    intents=intents,
-    application_id=APP_ID
-)
+_logs: list[dict] = []     # buffer lưu log
 
 @bot.event
 async def on_ready():
-    print(f"{bot.user} ONLINE! Syncing commands globally…")
+    print(f"✅ {bot.user} đã kết nối và sẵn sàng.")
     await bot.tree.sync()
-    print("Commands synced globally.")
 
+# 1) Bắt slash-commands
 @bot.event
-async def on_command(ctx):
-    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    entry = {
-        "user": f"{ctx.author.name}#{ctx.author.discriminator} (ID:{ctx.author.id})",
-        "command": ctx.message.content,
-        "time": now
-    }
-    logs.append(entry)
-    if len(logs) > 10:
-        logs.pop(0)
-    # In toàn bộ info trong message
-    logger.info(f"User: {entry['user']} | Command: {entry['command']} | Time: {entry['time']}")
+async def on_interaction(interaction: discord.Interaction):
+    if interaction.type == discord.InteractionType.application_command:
+        now  = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        user = f"{interaction.user.name}#{interaction.user.discriminator}"
+        cmd  = interaction.data["name"]
+        _logs.append({"time": now, "user": user, "command": cmd})
+        if len(_logs) > COMMAND_HISTORY_SIZE:
+            _logs.pop(0)
+        logger.info("", extra={"user": user, "command": cmd})
 
-@bot.tree.command(name="ping", description="Replies with Pong! + timestamp")
-async def ping(interaction: discord.Interaction):
-    await interaction.response.defer()
-    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    entry = {
-        "user": f"{interaction.user.name}#{interaction.user.discriminator} (ID:{interaction.user.id})",
-        "command": "/ping",
-        "time": now
-    }
-    logs.append(entry)
-    if len(logs) > 10:
-        logs.pop(0)
-    logger.info(f"User: {entry['user']} | Command: {entry['command']} | Time: {entry['time']}")
-    await interaction.followup.send(
-        f"```json\n{{\"message\":\"pong\",\"date\":\"{now}\"}}\n```"
-    )
+# 2) Bắt mọi prefix-commands (!whatever)
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+    if message.content.startswith(PREFIX):
+        now  = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        user = f"{message.author.name}#{message.author.discriminator}"
+        # lấy tên lệnh (trước dấu space)
+        cmd  = message.content[len(PREFIX):].split()[0]
+        _logs.append({"time": now, "user": user, "command": cmd})
+        if len(_logs) > COMMAND_HISTORY_SIZE:
+            _logs.pop(0)
+        logger.info("", extra={"user": user, "command": cmd})
+    # vẫn xử lý các lệnh đã định nghĩa (nếu có)
+    await bot.process_commands(message)
 
-# --- FastAPI app with lifespan to run the bot ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    bot_task = asyncio.create_task(bot.start(TOKEN))
-    yield
-    await bot.close()
+# 3) Thêm 1 command test để thử (không bắt buộc)
+@bot.tree.command(name="test", description="🚀 Test xem log có chạy không")
+async def test_command(interaction: discord.Interaction):
+    await interaction.response.send_message("🛠️ Test thành công, bạn gõ lệnh gì cũng được!")
 
-app = FastAPI(lifespan=lifespan)
+# 4) Khởi động bot (thread nền) ngay khi module được import
+if DISCORD_TOKEN:
+    threading.Thread(target=lambda: bot.run(DISCORD_TOKEN), daemon=True).start()
 
-@app.get("/")
-async def health_check():
-    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    return {"message": "Bot is running", "date": now}
+# ─── FASTAPI APP ─────────────────────────────────────────────────────────────────
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 
-@app.get("/logs")
+app = FastAPI()
+
+@app.get("/logs", response_class=HTMLResponse)
 async def get_logs():
-    return {"logs": logs}
+    rows = "\n".join(
+        f"<tr><td>{e['time']}</td>"
+        f"<td>{e['user']}</td>"
+        f"<td>/{e['command']}</td></tr>"
+        for e in _logs
+    )
+    html = f"""
+    <!DOCTYPE html><html><head>
+      <meta charset="utf-8"/><title>Command Logs</title>
+      <style>
+        body{{font-family:sans-serif;padding:2rem}}
+        table{{border-collapse:collapse;width:100%}}
+        th,td{{border:1px solid #ddd;padding:0.5rem}}
+        th{{background:#f0f0f0}}
+      </style>
+    </head><body>
+      <h1>Last {COMMAND_HISTORY_SIZE} Commands</h1>
+      <table>
+        <thead><tr>
+          <th>Thời gian (UTC)</th><th>User</th><th>Command</th>
+        </tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </body></html>
+    """
+    return html
 
+# ─── CHỈ CHẠY LOCAL KHI DEBUG ─────────────────────────────────────────────────────
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8002")))
