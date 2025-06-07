@@ -54,15 +54,18 @@ async def ping(interaction: discord.Interaction):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    print("Starting bot...")
     await bot.start(TOKEN)
     yield
+    print("Closing bot...")
     await bot.close()
 
 app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 def read_root():
-    return {"message": "Bot is running"}
+    current_date = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    return {"message": "Bot is running", "date": current_date}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
