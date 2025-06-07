@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 import discord
 from discord.ext import commands
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse
 import uvicorn
 from dotenv import load_dotenv
@@ -26,10 +26,10 @@ handler.setFormatter(
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-_logs = []          # Danh sách các bản ghi lệnh gần nhất
-_log_listeners = set()  # Các listener SSE
+_logs: list[dict] = []         # Danh sách các bản ghi lệnh gần nhất
+_log_listeners: set = set()    # Các listener SSE
 
-async def record(user: str, cmd: str):
+async def record(user: str, cmd: str) -> None:
     """Ghi nhận lệnh và gửi tới các listener SSE"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     entry = {"time": now, "user": user, "command": cmd}
@@ -60,25 +60,25 @@ async def test(ctx):
 
 # Slash commands
 @bot.tree.command(name="ping", description="Phản hồi Pong!")
-async def ping_slash(interaction: discord.Interaction):
+async def ping_slash(interaction: discord.Interaction) -> None:
     user = f"{interaction.user.name}#{interaction.user.discriminator}"
     await record(user, "ping")
     await interaction.response.send_message("🏓 Pong!", ephemeral=False)
 
 @bot.tree.command(name="test", description="Kiểm tra chức năng ghi log.")
-async def test_slash(interaction: discord.Interaction):
+async def test_slash(interaction: discord.Interaction) -> None:
     user = f"{interaction.user.name}#{interaction.user.discriminator}"
     await record(user, "test")
     await interaction.response.send_message("🛠️ Lệnh test thực thi thành công!", ephemeral=False)
 
 @bot.event
-async def on_ready():
+async def on_ready() -> None:
     print(f"✅ {bot.user} đã sẵn sàng!")
     await bot.tree.sync()
 
 # ─── Ứng dụng FastAPI với Lifespan & SSE ──────────────────────────
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app_obj: FastAPI):
     # Khởi động bot khi FastAPI start
     asyncio.create_task(bot.start(DISCORD_TOKEN))
     yield
@@ -88,9 +88,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 @app.get("/logs", response_class=HTMLResponse)
-async def get_logs(request: Request):
+async def get_logs() -> HTMLResponse:
     """Trang HTML hiển thị lịch sử lệnh (cập nhật trực tiếp)."""
-    html = f"""<!DOCTYPE html>
+    rows = ''.join(
+        f"<tr><td>{e['time']}</td><td>{e['user']}</td><td>/{e['command']}</td></tr>"
+        for e in _logs
+    )
+    html_template = """<!DOCTYPE html>
 <html><head><meta charset=\"utf-8\"/>
 <title>Lịch sử lệnh</title>
 <style>
@@ -100,12 +104,12 @@ async def get_logs(request: Request):
   th {{ background: #f0f0f0; }}
 </style>
 </head><body>
-  <h1>Lịch sử {COMMAND_HISTORY_SIZE} lệnh gần nhất (Trực tiếp)</h1>
+  <h1>Lịch sử {count} lệnh gần nhất (Trực tiếp)</h1>
   <table>
     <thead>
       <tr><th>Thời gian</th><th>Người dùng</th><th>Lệnh</th></tr>
     </thead>
-    <tbody id=\"logs-body\">{''.join(f"<tr><td>{e['time']}</td><td>{e['user']}</td><td>/{e['command']}</td></tr>" for e in _logs)}</tbody>
+    <tbody id=\"logs-body\">{rows}</tbody>
   </table>
 <script>
   const evtSource = new EventSource('/logs/stream');
@@ -118,13 +122,14 @@ async def get_logs(request: Request):
   };
 </script>
 </body></html>"""
+    html = html_template.format(count=COMMAND_HISTORY_SIZE, rows=rows)
     return HTMLResponse(content=html)
 
 @app.get('/logs/stream')
-async def stream_logs():
+async def stream_logs() -> StreamingResponse:
     """SSE endpoint phát sự kiện log mới."""
     async def event_generator():
-        queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue()
         _log_listeners.add(queue)
         try:
             while True:
