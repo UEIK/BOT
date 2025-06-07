@@ -14,7 +14,7 @@ DISCORD_TOKEN        = os.getenv("DISCORD_TOKEN")
 COMMAND_HISTORY_SIZE = int(os.getenv("COMMAND_HISTORY_SIZE", "20"))
 PREFIX               = "!"
 
-# Set up logger
+# ─── Logger & in‐memory buffer ────────────────────────────────────────
 logger = logging.getLogger("bot-logger")
 h = logging.StreamHandler()
 h.setFormatter(logging.Formatter("%(asctime)s - %(user)s - %(command)s",
@@ -22,20 +22,19 @@ h.setFormatter(logging.Formatter("%(asctime)s - %(user)s - %(command)s",
 logger.addHandler(h)
 logger.setLevel(logging.INFO)
 
-# In-memory buffer
 _logs = []
-
-# Discord Bot
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
 async def record(user: str, cmd: str):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     _logs.append({"time": now, "user": user, "command": cmd})
     if len(_logs) > COMMAND_HISTORY_SIZE:
         _logs.pop(0)
-    logger.info("", extra={"user":user,"command":cmd})
+    logger.info("", extra={"user": user, "command": cmd})
+
+# ─── Discord Bot ────────────────────────────────────────────────────────
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
 @bot.event
 async def on_ready():
@@ -43,23 +42,34 @@ async def on_ready():
     await bot.tree.sync()
 
 @bot.event
-async def on_interaction(interaction):
+async def on_interaction(interaction: discord.Interaction):
+    # Bắt và reply slash-commands
     if interaction.type == discord.InteractionType.application_command:
-        u = f"{interaction.user.name}#{interaction.user.discriminator}"
-        await record(u, str(interaction.data.get("name","")))
+        cmd = str(interaction.data.get("name", ""))
+        user = f"{interaction.user.name}#{interaction.user.discriminator}"
+        await record(user, cmd)
+        # <-- thêm reply ở đây
+        await interaction.response.send_message(f"🛠️ Đã ghi log lệnh `/{cmd}`!")
 
 @bot.event
-async def on_message(message):
-    if message.author.bot: return
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+
     if message.content.startswith(PREFIX):
-        u = f"{message.author.name}#{message.author.discriminator}"
         cmd = message.content[len(PREFIX):].split()[0]
-        await record(u, cmd)
+        user = f"{message.author.name}#{message.author.discriminator}"
+        await record(user, cmd)
+        # <-- thêm reply prefix
+        await message.channel.send(f"🛠️ Đã ghi log lệnh `{PREFIX}{cmd}`!")
+
+    # vẫn cho bot xử lý @bot.command() nếu có
     await bot.process_commands(message)
 
+# khởi bot background thread
 threading.Thread(target=lambda: bot.run(DISCORD_TOKEN), daemon=True).start()
 
-# FastAPI UI
+# ─── FastAPI UI ────────────────────────────────────────────────────────────
 app = FastAPI()
 
 @app.get("/logs", response_class=HTMLResponse)
@@ -84,4 +94,4 @@ async def get_logs():
     </body></html>"""
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT","8000")))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
