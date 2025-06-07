@@ -1,14 +1,32 @@
-from interactions import Client, Intents, listen, slash_command, SlashContext
+from fastapi import FastAPI
+from dotenv import load_dotenv
+import discord
+from discord.ext import commands
+import os
+from contextlib import asynccontextmanager
 
-# Khởi tạo bot
-intents = Intents.DEFAULT
-bot = Client(intents=intents)
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Định nghĩa slash command
-@slash_command(name="ping", description="Replies with Pong!")
-async def ping(ctx: SlashContext):
-    await ctx.send("Pong from Vercel!")
+intents = discord.Intents.default()
+intents.messages = True
+intents.message_content = True
 
-def verify_signature(raw_body, signature, timestamp, public_key):
-    from interactions import verify_key
-    return verify_key(raw_body, signature, timestamp, public_key)
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.event
+async def on_ready():
+    print(f"{bot.user} ONLINE!")
+    await bot.tree.sync()
+
+@bot.tree.command(name="ping", description="Replies with Pong!")
+async def ping(interaction: discord.Interaction):
+    await interaction.response.send_message("pong")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await bot.start(TOKEN)
+    yield
+    await bot.close()
+
+app = FastAPI(lifespan=lifespan)
