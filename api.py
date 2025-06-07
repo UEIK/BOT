@@ -1,84 +1,98 @@
+# api.py
+
 from dotenv import load_dotenv
 import os
+import asyncio
 from fastapi import FastAPI
-import uvicorn
-import discord
-from discord.ext import commands
 from contextlib import asynccontextmanager
+import uvicorn
 import logging
 from datetime import datetime
+import discord
+from discord.ext import commands
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - User: %(user)s - Command: %(command)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-
+# --- Load environment variables ---
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+APP_ID = int(os.getenv("DISCORD_APP_ID", "0"))
 
-# In-memory log storage (limited by function lifespan)
+# --- Configure logger to stdout (Vercel will collect these logs) ---
+logger = logging.getLogger("discord")
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter(
+    '%(asctime)s - %(levelname)s - %(message)s',  # chỉ giữ message
+    datefmt='%Y-%m-%d %H:%M:%S'
+))
+logger.addHandler(handler)
+
+# --- In-memory log buffer (keep last 10 entries) ---
 logs = []
 
+# --- Discord bot setup ---
 intents = discord.Intents.default()
-intents.messages = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents,
+    application_id=APP_ID
+)
 
 @bot.event
 async def on_ready():
-    print(f"{bot.user} ONLINE!")
+    print(f"{bot.user} ONLINE! Syncing commands globally…")
     await bot.tree.sync()
+    print("Commands synced globally.")
 
 @bot.event
 async def on_command(ctx):
-    logger = logging.getLogger()
-    current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    log_entry = {
-        "time": current_time,
-        "user": f"{ctx.author.name}#{ctx.author.discriminator} (ID: {ctx.author.id})",
-        "command": ctx.message.content
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    entry = {
+        "user": f"{ctx.author.name}#{ctx.author.discriminator} (ID:{ctx.author.id})",
+        "command": ctx.message.content,
+        "time": now
     }
-    logs.append(log_entry)
-    if len(logs) > 10:  # Giới hạn 10 log gần đây
+    logs.append(entry)
+    if len(logs) > 10:
         logs.pop(0)
-    logger.info("", extra=log_entry)
+    # In toàn bộ info trong message
+    logger.info(f"User: {entry['user']} | Command: {entry['command']} | Time: {entry['time']}")
 
-@bot.tree.command(name="ping", description="Replies with current status and date")
+@bot.tree.command(name="ping", description="Replies with Pong! + timestamp")
 async def ping(interaction: discord.Interaction):
-    logger = logging.getLogger()
-    current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    log_entry = {
-        "time": current_time,
-        "user": f"{interaction.user.name}#{interaction.user.discriminator} (ID: {interaction.user.id})",
-        "command": "/ping"
+    await interaction.response.defer()
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    entry = {
+        "user": f"{interaction.user.name}#{interaction.user.discriminator} (ID:{interaction.user.id})",
+        "command": "/ping",
+        "time": now
     }
-    logs.append(log_entry)
-    if len(logs) > 10:  # Giới hạn 10 log gần đây
+    logs.append(entry)
+    if len(logs) > 10:
         logs.pop(0)
-    logger.info("", extra=log_entry)
-    await interaction.response.send_message('```json\n{"message": "Bot is running", "date": "' + current_time + '"}\n```')
+    logger.info(f"User: {entry['user']} | Command: {entry['command']} | Time: {entry['time']}")
+    await interaction.followup.send(
+        f"```json\n{{\"message\":\"pong\",\"date\":\"{now}\"}}\n```"
+    )
 
+# --- FastAPI app with lifespan to run the bot ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Starting bot...")
-    await bot.start(TOKEN)
+    bot_task = asyncio.create_task(bot.start(TOKEN))
     yield
-    print("Closing bot...")
     await bot.close()
 
 app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
-def read_root():
-    current_date = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    return {"message": "Bot is running", "date": current_date}
+async def health_check():
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    return {"message": "Bot is running", "date": now}
 
 @app.get("/logs")
-def get_logs():
+async def get_logs():
     return {"logs": logs}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
