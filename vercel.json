@@ -10,6 +10,10 @@
     {
       "src": "/",
       "dest": "api.py"
+    },
+    {
+      "src": "/logs",
+      "dest": "api.py"
     }
   ]
 }

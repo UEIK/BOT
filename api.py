@@ -18,6 +18,9 @@ logging.basicConfig(
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+# In-memory log storage (limited by function lifespan)
+logs = []
+
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
@@ -32,25 +35,31 @@ async def on_ready():
 @bot.event
 async def on_command(ctx):
     logger = logging.getLogger()
-    logger.info(
-        "",
-        extra={
-            "user": f"{ctx.author.name}#{ctx.author.discriminator} (ID: {ctx.author.id})",
-            "command": ctx.message.content
-        }
-    )
+    current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    log_entry = {
+        "time": current_time,
+        "user": f"{ctx.author.name}#{ctx.author.discriminator} (ID: {ctx.author.id})",
+        "command": ctx.message.content
+    }
+    logs.append(log_entry)
+    if len(logs) > 10:  # Giới hạn 10 log gần đây
+        logs.pop(0)
+    logger.info("", extra=log_entry)
 
-@bot.tree.command(name="ping", description="Replies with Pong!")
+@bot.tree.command(name="ping", description="Replies with current status and date")
 async def ping(interaction: discord.Interaction):
     logger = logging.getLogger()
-    logger.info(
-        "",
-        extra={
-            "user": f"{interaction.user.name}#{interaction.user.discriminator} (ID: {interaction.user.id})",
-            "command": "/ping"
-        }
-    )
-    await interaction.response.send_message("pong")
+    current_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    log_entry = {
+        "time": current_time,
+        "user": f"{interaction.user.name}#{interaction.user.discriminator} (ID: {interaction.user.id})",
+        "command": "/ping"
+    }
+    logs.append(log_entry)
+    if len(logs) > 10:  # Giới hạn 10 log gần đây
+        logs.pop(0)
+    logger.info("", extra=log_entry)
+    await interaction.response.send_message('```json\n{"message": "Bot is running", "date": "' + current_time + '"}\n```')
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -66,6 +75,10 @@ app = FastAPI(lifespan=lifespan)
 def read_root():
     current_date = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
     return {"message": "Bot is running", "date": current_date}
+
+@app.get("/logs")
+def get_logs():
+    return {"logs": logs}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
